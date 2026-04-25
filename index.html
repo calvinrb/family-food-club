@@ -78,6 +78,20 @@
         min-height: 58px;
       }
       .keypad-btn:active { transform: translateY(2px); box-shadow: 0 2px 0 rgba(0,0,0,0.08); }
+      .wordpad-btn {
+        font-family: 'Fraunces', serif;
+        font-weight: 800;
+        font-size: 1.1rem;
+        background: white;
+        border-radius: 0.6rem;
+        box-shadow: 0 3px 0 rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
+        transition: all 0.08s ease;
+        min-height: 46px;
+        flex: 1;
+        max-width: 40px;
+      }
+      .wordpad-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,0.08); }
+      .wordpad-ctrl { max-width: 50px; flex: 1.1; }
       .reaction-btn { transition: all 0.2s cubic-bezier(.34,1.56,.64,1); }
       .reaction-btn.active { transform: scale(1.15) rotate(-4deg); }
       details[open] summary .chev { transform: rotate(90deg); }
@@ -109,7 +123,7 @@ import { createClient } from '@supabase/supabase-js';
 import {
   ArrowLeft, Plus, Edit3, Trash2, Settings, ExternalLink, Lock, X, Save,
   ChefHat, Lightbulb, Flame, Unlock, KeyRound, MessageCircle, Sparkles,
-  BookOpen, Users, UserPlus, CheckCircle2, ShieldCheck, Eye, EyeOff,
+  BookOpen, Users, UserPlus, CheckCircle2,
   Heart, Star, Delete, RotateCcw,
 } from 'lucide-react';
 
@@ -152,6 +166,13 @@ async function sha256Hex(text) {
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+// Normalise a 4-letter word for hashing: lowercase, trimmed, letters only
+const normaliseSecret = (s) => (s || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 4);
+const isValidSecret = (s) => normaliseSecret(s).length === 4;
+async function hashSecret(word) {
+  return sha256Hex('secret:' + normaliseSecret(word));
 }
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -572,9 +593,8 @@ function App() {
   // --- Gated navigation ---
   const openKid = (kid) => {
     if (!kid.pinHash) {
-      // No PIN set — show inform dialog
-      showToast('Ask a grown-up to set your PIN first');
-      return;
+      // No secret set — go straight in
+      setActiveKidId(kid.id); setView('kid'); return;
     }
     setGate({
       kind: 'kid',
@@ -585,8 +605,7 @@ function App() {
 
   const openGrownup = (g) => {
     if (!g.pinHash) {
-      showToast('PIN not set yet — set one in admin');
-      return;
+      setActiveGrownupId(g.id); setView('grownup'); return;
     }
     setGate({
       kind: 'grownup',
@@ -596,6 +615,10 @@ function App() {
   };
 
   const openAdmin = () => {
+    if (!config.adminPasswordHash) {
+      // No admin password set — go straight in
+      setView('admin'); return;
+    }
     setGate({
       kind: 'admin',
       onSuccess: () => { setView('admin'); setGate(null); },
@@ -736,13 +759,9 @@ function HomeScreen({ config, kidPrefs, grownupPrefs, currentWeek, onPickKid, on
             >
               <div className="absolute inset-x-0 top-0 h-2" style={{ backgroundColor: kid.primary }} />
               <div className="absolute -right-6 -top-6 w-28 h-28 rounded-full opacity-40" style={{ backgroundColor: kid.soft }} />
-              {kid.pinHash ? (
-                <div className="absolute top-3 right-3 bg-white/80 rounded-full w-8 h-8 flex items-center justify-center">
+              {kid.pinHash && (
+                <div className="absolute top-3 right-3 bg-white/80 rounded-full w-8 h-8 flex items-center justify-center" title="Secret word required">
                   <Lock className="w-4 h-4" style={{ color: kid.deep }} />
-                </div>
-              ) : (
-                <div className="absolute top-3 right-3 bg-yellow-100 text-yellow-800 text-xs font-bold px-2 py-1 rounded-full">
-                  no PIN
                 </div>
               )}
               <div className="relative">
@@ -781,10 +800,8 @@ function HomeScreen({ config, kidPrefs, grownupPrefs, currentWeek, onPickKid, on
                     <div className="font-display font-black text-lg leading-none" style={{ color: g.deep }}>{g.name}</div>
                     <div className="font-body text-xs text-stone-500 mt-0.5">{rated} rated</div>
                   </div>
-                  {g.pinHash ? (
-                    <Lock className="w-3.5 h-3.5 text-stone-400" />
-                  ) : (
-                    <span className="text-[10px] font-bold text-yellow-700 bg-yellow-100 px-1.5 py-0.5 rounded-full">no PIN</span>
+                  {g.pinHash && (
+                    <Lock className="w-3.5 h-3.5 text-stone-400" title="Secret word required" />
                   )}
                 </button>
               );
@@ -833,25 +850,25 @@ function Empty({ children }) {
 }
 
 /* ============================================================
-   PIN KEYPAD
+   WORD PAD (4-letter secret entry)
    ============================================================ */
-function PinKeypad({ color = '#059669', deep = '#064e3b', soft = '#d1fae5', length = 4, onComplete, error, onClear }) {
-  const [pin, setPin] = useState('');
+function WordPad({ color = '#059669', deep = '#064e3b', soft = '#d1fae5', length = 4, onComplete, error, onClear, showPreview = true }) {
+  const [word, setWord] = useState('');
   const [wrong, setWrong] = useState(false);
   const hasCompleted = useRef(false);
 
   useEffect(() => {
     if (error) {
       setWrong(true);
-      const t = setTimeout(() => { setPin(''); setWrong(false); hasCompleted.current = false; }, 500);
+      const t = setTimeout(() => { setWord(''); setWrong(false); hasCompleted.current = false; }, 500);
       return () => clearTimeout(t);
     }
   }, [error]);
 
-  const press = (d) => {
-    if (pin.length >= length) return;
-    const next = pin + d;
-    setPin(next);
+  const press = (letter) => {
+    if (word.length >= length) return;
+    const next = word + letter;
+    setWord(next);
     if (next.length === length && !hasCompleted.current) {
       hasCompleted.current = true;
       setTimeout(() => onComplete(next), 120);
@@ -859,37 +876,62 @@ function PinKeypad({ color = '#059669', deep = '#064e3b', soft = '#d1fae5', leng
   };
 
   const back = () => {
-    setPin((p) => p.slice(0, -1));
+    setWord((w) => w.slice(0, -1));
     hasCompleted.current = false;
     onClear && onClear();
   };
 
-  const clear = () => { setPin(''); hasCompleted.current = false; onClear && onClear(); };
+  const clear = () => { setWord(''); hasCompleted.current = false; onClear && onClear(); };
+
+  // QWERTY layout is most familiar for readers — 3 rows, cleanly tappable
+  const rows = [
+    ['q','w','e','r','t','y','u','i','o','p'],
+    ['a','s','d','f','g','h','j','k','l'],
+    ['z','x','c','v','b','n','m'],
+  ];
 
   return (
     <div className={wrong ? 'shake' : ''}>
-      <div className="flex gap-3 justify-center mb-6" style={{ color }}>
-        {Array.from({ length }).map((_, i) => (
-          <div key={i} className={`pin-dot ${i < pin.length ? 'filled' : ''}`} />
+      {showPreview && (
+        <div className="flex gap-2 justify-center mb-5" style={{ color }}>
+          {Array.from({ length }).map((_, i) => (
+            <div key={i} className="w-11 h-12 rounded-xl flex items-center justify-center font-display font-black text-2xl"
+              style={{
+                backgroundColor: i < word.length ? color : '#f5f5f4',
+                color: i < word.length ? 'white' : '#d6d3d1',
+                border: `2px solid ${i === word.length ? color : 'transparent'}`,
+              }}>
+              {i < word.length ? word[i].toUpperCase() : '·'}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="max-w-md mx-auto space-y-1.5">
+        {rows.map((row, ri) => (
+          <div key={ri} className="flex gap-1.5 justify-center">
+            {row.map((letter) => (
+              <button key={letter} onClick={() => press(letter)} className="wordpad-btn" style={{ color: deep }}>
+                {letter.toUpperCase()}
+              </button>
+            ))}
+            {ri === 2 && (
+              <>
+                <button onClick={back} className="wordpad-btn wordpad-ctrl flex items-center justify-center" style={{ color: '#a8a29e' }} aria-label="Backspace">
+                  <Delete className="w-5 h-5" />
+                </button>
+                <button onClick={clear} className="wordpad-btn wordpad-ctrl flex items-center justify-center" style={{ color: '#a8a29e' }} aria-label="Clear">
+                  <RotateCcw className="w-5 h-5" />
+                </button>
+              </>
+            )}
+          </div>
         ))}
-      </div>
-      <div className="grid grid-cols-3 gap-2.5 max-w-xs mx-auto">
-        {[1,2,3,4,5,6,7,8,9].map((n) => (
-          <button key={n} onClick={() => press(String(n))} className="keypad-btn" style={{ color: deep }}>
-            {n}
-          </button>
-        ))}
-        <button onClick={clear} className="keypad-btn flex items-center justify-center" style={{ color: '#a8a29e' }}>
-          <RotateCcw className="w-5 h-5" />
-        </button>
-        <button onClick={() => press('0')} className="keypad-btn" style={{ color: deep }}>0</button>
-        <button onClick={back} className="keypad-btn flex items-center justify-center" style={{ color: '#a8a29e' }}>
-          <Delete className="w-5 h-5" />
-        </button>
       </div>
     </div>
   );
 }
+// Keep old name as alias for any stragglers
+const PinKeypad = WordPad;
 
 /* ============================================================
    GATE (wraps kid PIN, grown-up PIN, admin password)
@@ -945,8 +987,8 @@ function PinGate({ title, emoji, color, deep, soft, expectedHash, onCancel, onSu
   const [error, setError] = useState(false);
   const [errorNonce, setErrorNonce] = useState(0);
 
-  const onComplete = async (pin) => {
-    const h = await sha256Hex(pin);
+  const onComplete = async (word) => {
+    const h = await hashSecret(word);
     if (h === expectedHash) {
       onSuccess();
     } else {
@@ -957,16 +999,16 @@ function PinGate({ title, emoji, color, deep, soft, expectedHash, onCancel, onSu
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 bounce-in">
-      <div className="bg-white rounded-3xl p-6 max-w-sm w-full chunky-shadow relative" style={{ border: `3px solid ${color}` }}>
+      <div className="bg-white rounded-3xl p-6 max-w-md w-full chunky-shadow relative" style={{ border: `3px solid ${color}` }}>
         <button onClick={onCancel} className="absolute top-3 right-3 w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center">
           <X className="w-4 h-4" />
         </button>
         <div className="text-5xl text-center mb-2">{emoji}</div>
         <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: deep }}>{title}</h3>
         <p className="font-script text-xl text-center mb-5" style={{ color }}>
-          {error ? 'nope, try again' : 'tap your 4 digits'}
+          {error ? 'nope, try again' : 'tap your secret word (4 letters)'}
         </p>
-        <PinKeypad key={errorNonce} color={color} deep={deep} soft={soft} onComplete={onComplete} error={error} onClear={() => setError(false)} />
+        <WordPad key={errorNonce} color={color} deep={deep} soft={soft} onComplete={onComplete} error={error} onClear={() => setError(false)} />
       </div>
     </div>
   );
@@ -1610,81 +1652,61 @@ function GrownupCreationCard({ kid, creation, grownup, config, rating, onRate, o
 }
 
 function AdminGate({ config, saveConfig, onCancel, onSuccess, onToast }) {
-  const [pw, setPw] = useState('');
-  const [confirmPw, setConfirmPw] = useState('');
-  const [show, setShow] = useState(false);
-  const [error, setError] = useState('');
-  const firstTime = !config.adminPasswordHash;
-  const submit = async (e) => {
-    if (e) e.preventDefault();
-    setError('');
-    if (firstTime) {
-      if (pw.length < 4) { setError('Use at least 4 characters'); return; }
-      if (pw !== confirmPw) { setError('Passwords don\u2019t match'); return; }
-      const hash = await sha256Hex(pw);
-      saveConfig({ ...config, adminPasswordHash: hash });
-      onToast && onToast('🔐 Admin password set');
+  const [error, setError] = useState(false);
+  const [errorNonce, setErrorNonce] = useState(0);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryText, setRecoveryText] = useState('');
+
+  const onComplete = async (word) => {
+    const h = await hashSecret(word);
+    if (h === config.adminPasswordHash) {
       onSuccess();
-      return;
+    } else {
+      setError(true);
+      setErrorNonce((n) => n + 1);
     }
-    // Recovery phrase?
-    if (pw.trim().toLowerCase() === ADMIN_RECOVERY_PHRASE) {
-      saveConfig({ ...config, adminPasswordHash: null });
-      onToast && onToast('🔓 Password cleared — set a new one');
-      // Stay on screen, now in first-time mode
-      setPw(''); setConfirmPw('');
-      return;
-    }
-    const h = await sha256Hex(pw);
-    if (h === config.adminPasswordHash) onSuccess();
-    else setError('Wrong password');
   };
+
+  const tryRecovery = () => {
+    if (recoveryText.trim().toLowerCase() === ADMIN_RECOVERY_PHRASE) {
+      saveConfig({ ...config, adminPasswordHash: null });
+      onToast && onToast('🔓 Admin word cleared');
+      onSuccess();
+    } else {
+      setError(true);
+      setErrorNonce((n) => n + 1);
+      setRecoveryText('');
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 bounce-in">
-      <div className="bg-white rounded-3xl p-6 max-w-sm w-full chunky-shadow relative" style={{ border: '3px solid #44403c' }}>
+      <div className="bg-white rounded-3xl p-6 max-w-md w-full chunky-shadow relative" style={{ border: '3px solid #44403c' }}>
         <button onClick={onCancel} className="absolute top-3 right-3 w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center">
           <X className="w-4 h-4" />
         </button>
-        <div className="text-5xl text-center mb-2">{firstTime ? '🔐' : '🔒'}</div>
-        <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: '#44403c' }}>
-          {firstTime ? 'Create admin password' : 'Grown-ups only'}
-        </h3>
-        <p className="font-body text-sm text-center text-stone-600 mb-4">
-          {firstTime ? 'First-time setup. Pick something the kids won\u2019t guess.' : 'Enter your password to edit the app.'}
+        <div className="text-5xl text-center mb-2">🔒</div>
+        <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: '#44403c' }}>Grown-ups only</h3>
+        <p className="font-script text-xl text-center mb-5 text-stone-500">
+          {error ? 'nope, try again' : 'tap the grown-up secret word'}
         </p>
-        <form onSubmit={submit}>
-          <div className="relative mb-3">
-            <input
-              type={show ? 'text' : 'password'}
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              placeholder="Password"
-              className="w-full font-body font-bold text-lg py-3 px-4 pr-12 rounded-2xl bg-stone-100 outline-none focus:bg-stone-200"
-              autoFocus
-            />
-            <button type="button" onClick={() => setShow((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-500 p-1">
-              {show ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+        <WordPad key={errorNonce} color="#44403c" deep="#1c1917" soft="#f5f5f4" onComplete={onComplete} error={error} onClear={() => setError(false)} />
+        <div className="mt-4 text-center">
+          {!recoveryOpen ? (
+            <button onClick={() => { setRecoveryOpen(true); setError(false); }} className="font-body text-xs text-stone-400 underline hover:text-stone-600">
+              forgot the word?
             </button>
-          </div>
-          {firstTime && (
-            <input
-              type={show ? 'text' : 'password'}
-              value={confirmPw}
-              onChange={(e) => setConfirmPw(e.target.value)}
-              placeholder="Confirm password"
-              className="w-full font-body font-bold text-lg py-3 px-4 rounded-2xl bg-stone-100 outline-none focus:bg-stone-200 mb-3"
-            />
+          ) : (
+            <div className="mt-3 pt-3 border-t-2 border-dashed border-stone-200">
+              <div className="font-body text-xs text-stone-600 mb-2">Type the recovery phrase to clear the admin word:</div>
+              <div className="flex gap-2">
+                <input value={recoveryText} onChange={(e) => setRecoveryText(e.target.value)} placeholder="recovery phrase"
+                  className="flex-1 font-body text-sm py-2 px-3 rounded-xl bg-stone-100 outline-none focus:bg-stone-200" />
+                <button onClick={tryRecovery} className="rounded-xl px-3 font-body font-bold text-sm text-white" style={{ backgroundColor: '#44403c' }}>Go</button>
+              </div>
+            </div>
           )}
-          {error && <div className="font-body text-sm text-rose-600 text-center mb-3">{error}</div>}
-          <button type="submit" className="sticker w-full rounded-2xl py-3 font-display font-bold text-white" style={{ backgroundColor: '#059669' }}>
-            {firstTime ? 'Set password & unlock' : 'Unlock'}
-          </button>
-        </form>
-        {!firstTime && (
-          <p className="font-body text-xs text-center text-stone-400 mt-3">
-            Forgot? Type the recovery phrase to reset.
-          </p>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -1694,17 +1716,16 @@ function AdminGate({ config, saveConfig, onCancel, onSuccess, onToast }) {
    ADMIN PANEL
    ============================================================ */
 function AdminPanel({ config, kidPrefs, grownupPrefs, currentWeek, saveConfig, onBack, onToast }) {
-  const [tab, setTab] = useState('shopping');
+  const [tab, setTab] = useState('overview');
   const [dialog, setDialog] = useState(null); // { kind, payload }
 
   const tabs = [
-    { id: 'shopping',   label: 'Shopping',   emoji: '🧾' },
+    { id: 'overview',   label: 'Overview',   emoji: '📊' },
     { id: 'foods',      label: 'Foods',      emoji: '🍽️' },
     { id: 'new',        label: 'New foods',  emoji: '🗺️' },
     { id: 'ingredients',label: 'Ingredients',emoji: '🧺' },
     { id: 'profiles',   label: 'Profiles',   emoji: '👥' },
     { id: 'creations',  label: 'Creations',  emoji: '👨‍🍳' },
-    { id: 'security',   label: 'Security',   emoji: '🔐' },
   ];
 
   return (
@@ -1734,13 +1755,12 @@ function AdminPanel({ config, kidPrefs, grownupPrefs, currentWeek, saveConfig, o
         ))}
       </div>
 
-      {tab === 'shopping'   && <AdminShopping config={config} kidPrefs={kidPrefs} grownupPrefs={grownupPrefs} currentWeek={currentWeek} onToast={onToast} />}
+      {tab === 'overview'   && <AdminOverview config={config} kidPrefs={kidPrefs} grownupPrefs={grownupPrefs} currentWeek={currentWeek} onToast={onToast} />}
       {tab === 'foods'      && <AdminFoods config={config} saveConfig={saveConfig} setDialog={setDialog} />}
       {tab === 'new'        && <AdminNewFoods config={config} saveConfig={saveConfig} setDialog={setDialog} />}
       {tab === 'ingredients'&& <AdminIngredients config={config} saveConfig={saveConfig} setDialog={setDialog} />}
       {tab === 'profiles'   && <AdminProfiles config={config} saveConfig={saveConfig} setDialog={setDialog} onToast={onToast} />}
       {tab === 'creations'  && <AdminCreations config={config} kidPrefs={kidPrefs} grownupPrefs={grownupPrefs} saveConfig={saveConfig} setDialog={setDialog} />}
-      {tab === 'security'   && <AdminSecurity config={config} saveConfig={saveConfig} onToast={onToast} />}
 
       {dialog && dialog.kind === 'food' && (
         <FoodEditorDialog
@@ -1812,17 +1832,29 @@ function AdminPanel({ config, kidPrefs, grownupPrefs, currentWeek, saveConfig, o
         />
       )}
       {dialog && dialog.kind === 'setpin' && (
-        <SetPinDialog
+        <SetSecretDialog
           payload={dialog.payload}
           onCancel={() => setDialog(null)}
-          onSave={async (pin) => {
+          onSave={async (word) => {
             const { who, profileId } = dialog.payload;
-            const hash = await sha256Hex(pin);
+            const hash = await hashSecret(word);
             const listKey = who === 'kid' ? 'kids' : 'grownups';
             const list = (config[listKey] || []).map((p) => p.id === profileId ? { ...p, pinHash: hash } : p);
             saveConfig({ ...config, [listKey]: list });
             setDialog(null);
-            onToast('🔐 PIN saved');
+            onToast('🔐 Secret word saved');
+          }}
+        />
+      )}
+      {dialog && dialog.kind === 'setadmin' && (
+        <SetSecretDialog
+          payload={{ name: 'Grown-up admin', emoji: '🛠️', color: '#44403c', deep: '#1c1917', soft: '#f5f5f4' }}
+          onCancel={() => setDialog(null)}
+          onSave={async (word) => {
+            const hash = await hashSecret(word);
+            saveConfig({ ...config, adminPasswordHash: hash });
+            setDialog(null);
+            onToast('🔐 Admin secret saved');
           }}
         />
       )}
@@ -1845,16 +1877,17 @@ function AdminPanel({ config, kidPrefs, grownupPrefs, currentWeek, saveConfig, o
 }
 
 /* ============================================================
-   ADMIN: SHOPPING (weekly snapshot + markdown export)
+   ADMIN: OVERVIEW (kid-card dashboard + markdown export)
    ============================================================ */
-function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast }) {
+function AdminOverview({ config, kidPrefs, grownupPrefs, currentWeek, onToast }) {
   const foods = allFoods(config);
   const foodById = Object.fromEntries(foods.map((f) => [f.id, f]));
 
-  // Compute per-kid info
+  // Per-kid richer stats
   const perKid = config.kids.map((kid) => {
     const p = kidPrefs[kid.id] || blankKidPrefs();
     const loves = Object.entries(p.ratings || {}).filter(([, v]) => v === 'love').map(([id]) => foodById[id]).filter(Boolean);
+    const likes = Object.entries(p.ratings || {}).filter(([, v]) => v === 'like').map(([id]) => foodById[id]).filter(Boolean);
     const nopes = Object.entries(p.ratings || {}).filter(([, v]) => v === 'nope').map(([id]) => foodById[id]).filter(Boolean);
     const braveYes = Object.entries(p.brave || {}).filter(([, v]) => v === 'yes').map(([id]) => (config.newFoods || []).find((f) => f.id === id)).filter(Boolean);
     const triedLoved = Object.entries(p.tried || {}).filter(([, v]) => v === 'loved').map(([id]) => (config.newFoods || []).find((f) => f.id === id)).filter(Boolean);
@@ -1862,13 +1895,14 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
     const earned = stamps.filter((s) => s.earned).length;
     const streak = computeStreak(p.weekActivity || {}, currentWeek);
     const weekPick = p.weeklyPick && p.weeklyPick.week === currentWeek ? foodById[p.weeklyPick.mealId] : null;
-    const weekCreations = (p.creations || []).filter((c) => c.week === currentWeek);
-    return { kid, loves, nopes, braveYes, triedLoved, earned, total: stamps.length, streak, weekPick, weekCreations };
+    const creations = (p.creations || []);
+    const weekCreations = creations.filter((c) => c.week === currentWeek);
+    return { kid, loves, likes, nopes, braveYes, triedLoved, earned, total: stamps.length, streak, weekPick, creations, weekCreations };
   });
 
   // Family-favourite meals (loved by multiple kids)
   const loveCount = {};
-  for (const { kid, loves } of perKid) {
+  for (const { loves } of perKid) {
     for (const f of loves) loveCount[f.id] = (loveCount[f.id] || 0) + 1;
   }
   const familyFaves = Object.entries(loveCount)
@@ -1876,13 +1910,13 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
     .map(([id, n]) => ({ food: foodById[id], count: n }))
     .sort((a, b) => b.count - a.count);
 
-  // Avoid list: anything all 3 kids rated nope
-  const allNope = foods.filter((f) =>
-    config.kids.every((k) => (kidPrefs[k.id]?.ratings || {})[f.id] === 'nope')
-  );
+  // Avoid list: anything all kids rated nope
+  const allNope = config.kids.length > 0
+    ? foods.filter((f) => config.kids.every((k) => (kidPrefs[k.id]?.ratings || {})[f.id] === 'nope'))
+    : [];
 
-  // Grown-up reactions on creations this week
-  const grownupNotesThisWeek = [];
+  // Grown-up reactions on creations
+  const allGrownupNotes = [];
   for (const kid of config.kids) {
     const p = kidPrefs[kid.id] || blankKidPrefs();
     for (const c of (p.creations || [])) {
@@ -1890,7 +1924,7 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
         const gp = grownupPrefs[g.id] || blankGrownupPrefs();
         const r = gp.creationRatings?.[`${kid.id}:${c.id}`];
         if (r && (r.reaction || r.comment)) {
-          grownupNotesThisWeek.push({ kid, creation: c, grownup: g, r });
+          allGrownupNotes.push({ kid, creation: c, grownup: g, r });
         }
       }
     }
@@ -1916,10 +1950,11 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
       md += `\n`;
     }
     md += `## 💖 What each kid loves\n\n`;
-    for (const { kid, loves } of perKid) {
+    for (const { kid, loves, nopes } of perKid) {
       md += `### ${kid.emoji} ${kid.name}\n`;
-      md += loves.length ? loves.map((f) => `- ${f.emoji} ${f.name}`).join('\n') : `_nothing yet_`;
-      md += `\n\n`;
+      md += loves.length ? `**Loves:** ${loves.map((f) => `${f.emoji} ${f.name}`).join(', ')}\n` : `_no loves yet_\n`;
+      if (nopes.length) md += `**Nopes:** ${nopes.map((f) => `${f.emoji} ${f.name}`).join(', ')}\n`;
+      md += `\n`;
     }
     if (allNope.length > 0) {
       md += `## 🙅 Avoid list (all kids said nope)\n\n`;
@@ -1938,9 +1973,9 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
       }
       md += `\n`;
     }
-    if (grownupNotesThisWeek.length > 0) {
+    if (allGrownupNotes.length > 0) {
       md += `## 📣 Grown-up reactions on creations\n\n`;
-      for (const { kid, creation, grownup, r } of grownupNotesThisWeek) {
+      for (const { kid, creation, grownup, r } of allGrownupNotes) {
         const rx = GROWNUP_REACTIONS.find((x) => x.key === r.reaction);
         md += `- ${grownup.emoji} **${grownup.name}** on ${kid.emoji} ${kid.name}'s "${creation.name}": ${rx ? rx.emoji : ''} ${r.comment ? `— "${r.comment}"` : ''}\n`;
       }
@@ -1973,19 +2008,23 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
 
   return (
     <div>
+      {/* Week header + export */}
       <div className="sticker bg-white rounded-2xl p-4 mb-4 chunky-shadow" style={{ border: '2px solid #44403c' }}>
-        <div className="flex items-center justify-between mb-1">
-          <h3 className="font-display font-black text-xl text-stone-800">Week {currentWeek}</h3>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 className="font-display font-black text-xl text-stone-800">Week {currentWeek}</h3>
+            <p className="font-body text-xs text-stone-500">At a glance. Export for shopping or sharing.</p>
+          </div>
           <div className="flex gap-2">
-            <button onClick={copyMarkdown} className="sticker rounded-full px-3 py-1.5 text-xs font-display font-bold bg-white text-stone-700" style={{ border: '2px solid #44403c' }}>Copy MD</button>
-            <button onClick={downloadMarkdown} className="sticker rounded-full px-3 py-1.5 text-xs font-display font-bold text-white" style={{ backgroundColor: '#44403c' }}>Download</button>
+            <button onClick={copyMarkdown} className="sticker rounded-full px-3 py-1.5 text-xs font-display font-bold bg-white text-stone-700" style={{ border: '2px solid #44403c' }}>📋 Copy</button>
+            <button onClick={downloadMarkdown} className="sticker rounded-full px-3 py-1.5 text-xs font-display font-bold text-white" style={{ backgroundColor: '#44403c' }}>⬇️ Download</button>
           </div>
         </div>
-        <p className="font-body text-xs text-stone-500">Weekly snapshot for shopping, meal planning, or sharing.</p>
       </div>
 
+      {/* Family favourites strip */}
       {familyFaves.length > 0 && (
-        <section className="mb-4">
+        <section className="mb-5">
           <h4 className="font-display font-black text-lg mb-2">🌟 Family favourites</h4>
           <div className="flex flex-wrap gap-2">
             {familyFaves.map(({ food, count }) => (
@@ -1999,34 +2038,17 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
         </section>
       )}
 
-      <section className="mb-4">
-        <h4 className="font-display font-black text-lg mb-2">📅 This week's votes</h4>
-        <div className="grid gap-2">
-          {perKid.map(({ kid, weekPick, weekCreations, braveYes, triedLoved, earned, total, streak }) => (
-            <div key={kid.id} className="sticker bg-white rounded-2xl p-3 relative overflow-hidden" style={{ border: `2px solid ${kid.soft}` }}>
-              <div className="flex items-start gap-3">
-                <div className="text-3xl">{kid.emoji}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-display font-black text-base" style={{ color: kid.deep }}>{kid.name}</div>
-                  <div className="font-body text-sm text-stone-600 mt-0.5">
-                    {weekPick ? <><span className="font-bold">Dinner vote:</span> {weekPick.emoji} {weekPick.name}</> : <span className="italic text-stone-400">no dinner vote yet</span>}
-                  </div>
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    <Chip color={kid.soft} textColor={kid.deep}>⭐ {earned}/{total}</Chip>
-                    {streak >= 1 && <Chip color="#fee2e2" textColor="#991b1b">🔥 {streak}wk</Chip>}
-                    {braveYes.length > 0 && <Chip color="#fef3c7" textColor="#92400e">🗺️ {braveYes.length} brave</Chip>}
-                    {triedLoved.length > 0 && <Chip color="#fce7f3" textColor="#9f1239">💖 {triedLoved.length} new fave</Chip>}
-                    {weekCreations.length > 0 && <Chip color="#dbeafe" textColor="#0c4a6e">👨‍🍳 {weekCreations.length} created</Chip>}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
+      {/* Kid cards — the main event */}
+      <section className="mb-5">
+        <h4 className="font-display font-black text-lg mb-3">👧 Per-kid overview</h4>
+        <div className="grid gap-4 md:grid-cols-2">
+          {perKid.map((k) => <KidOverviewCard key={k.kid.id} {...k} />)}
         </div>
       </section>
 
+      {/* Avoid list */}
       {allNope.length > 0 && (
-        <section className="mb-4">
+        <section className="mb-5">
           <h4 className="font-display font-black text-lg mb-2 text-stone-700">🙅 Avoid list</h4>
           <p className="font-body text-xs text-stone-500 mb-2">All kids said nope</p>
           <div className="flex flex-wrap gap-2">
@@ -2039,11 +2061,12 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
         </section>
       )}
 
-      {grownupNotesThisWeek.length > 0 && (
+      {/* Grown-up notes */}
+      {allGrownupNotes.length > 0 && (
         <section className="mb-4">
-          <h4 className="font-display font-black text-lg mb-2">📣 Grown-up reactions this week</h4>
+          <h4 className="font-display font-black text-lg mb-2">📣 Grown-up reactions</h4>
           <div className="space-y-2">
-            {grownupNotesThisWeek.map(({ kid, creation, grownup, r }, i) => {
+            {allGrownupNotes.slice(0, 12).map(({ kid, creation, grownup, r }, i) => {
               const rx = GROWNUP_REACTIONS.find((x) => x.key === r.reaction);
               return (
                 <div key={i} className="bg-white rounded-2xl p-3 flex items-start gap-3" style={{ border: `2px solid ${grownup.soft}` }}>
@@ -2064,6 +2087,118 @@ function AdminShopping({ config, kidPrefs, grownupPrefs, currentWeek, onToast })
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+function KidOverviewCard({ kid, loves, likes, nopes, braveYes, triedLoved, earned, total, streak, weekPick, creations, weekCreations }) {
+  return (
+    <div className="sticker bg-white rounded-2xl p-4 relative overflow-hidden" style={{ border: `3px solid ${kid.primary}` }}>
+      <div className="absolute inset-x-0 top-0 h-1.5" style={{ backgroundColor: kid.primary }} />
+      <div className="absolute -right-4 -top-4 text-5xl opacity-10">{kid.emoji}</div>
+      <div className="relative">
+        <div className="flex items-start gap-3 mb-3">
+          <div className="text-4xl">{kid.emoji}</div>
+          <div className="flex-1 min-w-0">
+            <div className="font-display font-black text-xl leading-tight" style={{ color: kid.deep }}>{kid.name}</div>
+            <p className="font-script text-base leading-none" style={{ color: kid.primary }}>{kid.tagline}</p>
+          </div>
+        </div>
+        {/* Quick stats row */}
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          <Chip color={kid.soft} textColor={kid.deep}>⭐ {earned}/{total}</Chip>
+          {streak >= 1 && <Chip color="#fee2e2" textColor="#991b1b">🔥 {streak}wk</Chip>}
+          <Chip color="#fce7f3" textColor="#9f1239">💖 {loves.length} love{loves.length === 1 ? '' : 's'}</Chip>
+          {nopes.length > 0 && <Chip color="#f5f5f4" textColor="#57534e">🙅 {nopes.length} nope{nopes.length === 1 ? '' : 's'}</Chip>}
+        </div>
+        {/* Dinner vote */}
+        <div className="mb-3 rounded-xl px-3 py-2" style={{ backgroundColor: kid.soft }}>
+          <div className="font-body text-[10px] uppercase tracking-wide font-bold" style={{ color: kid.deep, opacity: 0.7 }}>This week's dinner vote</div>
+          {weekPick ? (
+            <div className="font-body font-bold text-sm mt-0.5" style={{ color: kid.deep }}>{weekPick.emoji} {weekPick.name}</div>
+          ) : (
+            <div className="font-body italic text-sm text-stone-400 mt-0.5">no vote yet</div>
+          )}
+        </div>
+        {/* Loves */}
+        <OverviewList
+          title="Loves"
+          emoji="💖"
+          items={loves}
+          empty="No loves yet"
+          color={kid.deep}
+          soft={kid.soft}
+          limit={8}
+        />
+        {/* Nopes */}
+        {nopes.length > 0 && (
+          <OverviewList
+            title="Nopes"
+            emoji="🙅"
+            items={nopes}
+            color="#57534e"
+            soft="#f5f5f4"
+            limit={6}
+            strikethrough
+          />
+        )}
+        {/* Brave */}
+        {(braveYes.length > 0 || triedLoved.length > 0) && (
+          <div className="mt-2">
+            {braveYes.length > 0 && (
+              <OverviewList title="Willing to try" emoji="🗺️" items={braveYes} color="#92400e" soft="#fef3c7" limit={5} />
+            )}
+            {triedLoved.length > 0 && (
+              <OverviewList title="Actually loved" emoji="👅💖" items={triedLoved} color="#9f1239" soft="#fce7f3" limit={5} />
+            )}
+          </div>
+        )}
+        {/* Creations */}
+        {creations.length > 0 && (
+          <div className="mt-3 pt-3 border-t-2 border-dashed border-stone-200">
+            <div className="font-body text-[10px] uppercase tracking-wide font-bold mb-1.5" style={{ color: kid.deep, opacity: 0.7 }}>
+              👨‍🍳 Creations ({creations.length}{weekCreations.length ? ` · ${weekCreations.length} this week` : ''})
+            </div>
+            <div className="font-body text-xs text-stone-600">
+              {creations.slice(-3).reverse().map((c, i, arr) => (
+                <span key={c.id}>
+                  <span className="font-bold" style={{ color: kid.deep }}>{c.name}</span>
+                  {i < arr.length - 1 && <span className="text-stone-400"> · </span>}
+                </span>
+              ))}
+              {creations.length > 3 && <span className="text-stone-400 italic"> +{creations.length - 3} more</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OverviewList({ title, emoji, items, color, soft, limit = 8, strikethrough = false, empty }) {
+  if (!items || items.length === 0) {
+    if (!empty) return null;
+    return (
+      <div className="mt-2">
+        <div className="font-body text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color, opacity: 0.7 }}>{emoji} {title}</div>
+        <div className="font-body italic text-xs text-stone-400">{empty}</div>
+      </div>
+    );
+  }
+  const shown = items.slice(0, limit);
+  const rest = items.length - shown.length;
+  return (
+    <div className="mt-2">
+      <div className="font-body text-[10px] uppercase tracking-wide font-bold mb-1" style={{ color, opacity: 0.7 }}>{emoji} {title}</div>
+      <div className="flex flex-wrap gap-1">
+        {shown.map((f) => (
+          <span key={f.id} className="rounded-full px-2 py-0.5 flex items-center gap-1" style={{ backgroundColor: soft, color }}>
+            <span>{f.emoji}</span>
+            <span className={`font-body text-xs font-bold ${strikethrough ? 'line-through' : ''}`}>{f.name}</span>
+          </span>
+        ))}
+        {rest > 0 && <span className="font-body text-xs italic text-stone-400 self-center">+{rest} more</span>}
+      </div>
     </div>
   );
 }
@@ -2196,7 +2331,7 @@ function AdminIngredients({ config, saveConfig, setDialog }) {
 }
 
 /* ============================================================
-   ADMIN: PROFILES (kids + grown-ups, with PIN management)
+   ADMIN: PROFILES (kids + grown-ups + admin secret — all optional)
    ============================================================ */
 function AdminProfiles({ config, saveConfig, setDialog, onToast }) {
   const delProfile = (who, id) => {
@@ -2204,12 +2339,17 @@ function AdminProfiles({ config, saveConfig, setDialog, onToast }) {
     const listKey = who === 'kid' ? 'kids' : 'grownups';
     saveConfig({ ...config, [listKey]: (config[listKey] || []).filter((p) => p.id !== id) });
   };
-  const resetPin = (who, id) => {
-    if (!confirm('Clear this PIN?')) return;
+  const clearSecret = (who, id) => {
+    if (!confirm('Remove this secret word? They can switch straight in without one.')) return;
     const listKey = who === 'kid' ? 'kids' : 'grownups';
     const list = (config[listKey] || []).map((p) => p.id === id ? { ...p, pinHash: null } : p);
     saveConfig({ ...config, [listKey]: list });
-    onToast('🔓 PIN cleared');
+    onToast('🔓 Secret word removed');
+  };
+  const clearAdminSecret = () => {
+    if (!confirm('Remove the admin secret word? Grown-up admin will open without one.')) return;
+    saveConfig({ ...config, adminPasswordHash: null });
+    onToast('🔓 Admin secret removed');
   };
 
   const renderProfile = (profile, who) => (
@@ -2221,21 +2361,21 @@ function AdminProfiles({ config, saveConfig, setDialog, onToast }) {
         <div className="flex items-center gap-1.5 mt-0.5">
           {profile.pinHash ? (
             <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 rounded-full px-1.5 py-0.5 flex items-center gap-1">
-              <Lock className="w-2.5 h-2.5" /> PIN set
+              <Lock className="w-2.5 h-2.5" /> secret set
             </span>
           ) : (
-            <span className="text-[10px] font-bold bg-yellow-100 text-yellow-700 rounded-full px-1.5 py-0.5">no PIN</span>
+            <span className="text-[10px] font-bold bg-stone-100 text-stone-500 rounded-full px-1.5 py-0.5">no secret (optional)</span>
           )}
         </div>
       </div>
       <div className="flex flex-col gap-1">
         <div className="flex gap-1">
           <button onClick={() => setDialog({ kind: 'setpin', payload: { who, profileId: profile.id, name: profile.name, emoji: profile.emoji, color: profile.primary, deep: profile.deep, soft: profile.soft } })}
-            className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center" title={profile.pinHash ? 'Change PIN' : 'Set PIN'}>
+            className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center" title={profile.pinHash ? 'Change secret word' : 'Set secret word'}>
             <KeyRound className="w-4 h-4 text-emerald-700" />
           </button>
           {profile.pinHash && (
-            <button onClick={() => resetPin(who, profile.id)} className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center" title="Clear PIN">
+            <button onClick={() => clearSecret(who, profile.id)} className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center" title="Remove secret word">
               <Unlock className="w-4 h-4 text-stone-500" />
             </button>
           )}
@@ -2254,6 +2394,13 @@ function AdminProfiles({ config, saveConfig, setDialog, onToast }) {
 
   return (
     <div>
+      <div className="bg-amber-50 rounded-2xl p-3 mb-4 text-sm" style={{ border: '2px dashed #f59e0b' }}>
+        <div className="font-display font-bold text-amber-800 mb-1">🔑 Secret words are optional</div>
+        <p className="font-body text-amber-900 text-xs leading-snug">
+          Anyone without a secret word goes straight in — no gate, just tap their card. Add one only if you want a privacy layer.
+        </p>
+      </div>
+
       <section className="mb-5">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-display font-black text-xl flex items-center gap-2">👧 Kids</h3>
@@ -2279,6 +2426,39 @@ function AdminProfiles({ config, saveConfig, setDialog, onToast }) {
         <div className="space-y-2">
           {config.grownups.map((g) => renderProfile(g, 'grownup'))}
           {config.grownups.length === 0 && <Empty>No grown-ups yet — add Mum and Dad!</Empty>}
+        </div>
+      </section>
+
+      <section className="mb-5">
+        <h3 className="font-display font-black text-xl mb-2 flex items-center gap-2">🔐 Admin secret word</h3>
+        <div className="bg-white rounded-2xl p-3" style={{ border: '2px solid #44403c' }}>
+          <div className="flex items-center gap-3">
+            <div className="text-3xl">🛠️</div>
+            <div className="flex-1">
+              <div className="font-display font-black text-base text-stone-800">Grown-up admin</div>
+              {config.adminPasswordHash ? (
+                <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 rounded-full px-1.5 py-0.5 inline-flex items-center gap-1 mt-0.5">
+                  <Lock className="w-2.5 h-2.5" /> secret set
+                </span>
+              ) : (
+                <span className="text-[10px] font-bold bg-stone-100 text-stone-500 rounded-full px-1.5 py-0.5 inline-block mt-0.5">no secret (optional)</span>
+              )}
+            </div>
+            <div className="flex gap-1">
+              <button onClick={() => setDialog({ kind: 'setadmin', payload: {} })}
+                className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center" title={config.adminPasswordHash ? 'Change admin word' : 'Set admin word'}>
+                <KeyRound className="w-4 h-4 text-stone-700" />
+              </button>
+              {config.adminPasswordHash && (
+                <button onClick={clearAdminSecret} className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center" title="Remove admin secret">
+                  <Unlock className="w-4 h-4 text-stone-500" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="mt-2 text-xs text-stone-500 font-body">
+            Forgot it? Type the recovery phrase <span className="font-mono bg-stone-100 rounded px-1 py-0.5">pepper-pancake-parade</span> on the admin screen to clear.
+          </div>
         </div>
       </section>
     </div>
@@ -2351,59 +2531,6 @@ function AdminCreations({ config, kidPrefs, grownupPrefs, saveConfig, setDialog 
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-/* ============================================================
-   ADMIN: SECURITY
-   ============================================================ */
-function AdminSecurity({ config, saveConfig, onToast }) {
-  const [oldPw, setOldPw] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [confirmPw, setConfirmPw] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const change = async (e) => {
-    if (e) e.preventDefault();
-    setError('');
-    if (newPw.length < 4) { setError('New password must be 4+ characters'); return; }
-    if (newPw !== confirmPw) { setError('New passwords don\u2019t match'); return; }
-    setBusy(true);
-    const oldH = await sha256Hex(oldPw);
-    if (oldH !== config.adminPasswordHash) { setError('Current password is wrong'); setBusy(false); return; }
-    const newH = await sha256Hex(newPw);
-    saveConfig({ ...config, adminPasswordHash: newH });
-    setOldPw(''); setNewPw(''); setConfirmPw(''); setBusy(false);
-    onToast('🔐 Password changed');
-  };
-
-  return (
-    <div>
-      <div className="sticker bg-white rounded-2xl p-4 mb-4" style={{ border: '2px solid #44403c' }}>
-        <h3 className="font-display font-black text-xl mb-3 flex items-center gap-2">
-          <ShieldCheck className="w-5 h-5" /> Change admin password
-        </h3>
-        <form onSubmit={change} className="space-y-2">
-          <input type="password" value={oldPw} onChange={(e) => setOldPw(e.target.value)} placeholder="Current password"
-            className="w-full font-body text-base py-2.5 px-3 rounded-xl bg-stone-100 outline-none focus:bg-stone-200" />
-          <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="New password"
-            className="w-full font-body text-base py-2.5 px-3 rounded-xl bg-stone-100 outline-none focus:bg-stone-200" />
-          <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} placeholder="Confirm new password"
-            className="w-full font-body text-base py-2.5 px-3 rounded-xl bg-stone-100 outline-none focus:bg-stone-200" />
-          {error && <div className="font-body text-sm text-rose-600">{error}</div>}
-          <button type="submit" disabled={busy} className="sticker w-full rounded-2xl py-2.5 font-display font-bold text-white" style={{ backgroundColor: '#44403c' }}>
-            {busy ? 'Saving…' : 'Change password'}
-          </button>
-        </form>
-      </div>
-      <div className="bg-amber-50 rounded-2xl p-4 text-sm" style={{ border: '2px dashed #f59e0b' }}>
-        <div className="font-display font-bold mb-1 text-amber-800">🔑 Forgotten password recovery</div>
-        <p className="font-body text-amber-900 leading-snug">
-          If you forget the admin password, type the recovery phrase <span className="font-mono bg-white rounded px-1.5 py-0.5 text-xs">pepper-pancake-parade</span> into the admin password field to clear it. You'll then be asked to set a new one.
-        </p>
-      </div>
     </div>
   );
 }
@@ -2582,41 +2709,41 @@ function ProfileEditorDialog({ payload, onCancel, onSave }) {
   );
 }
 
-function SetPinDialog({ payload, onCancel, onSave }) {
+function SetSecretDialog({ payload, onCancel, onSave }) {
   const { name, emoji, color, deep, soft } = payload;
   const [step, setStep] = useState('first');
-  const [firstPin, setFirstPin] = useState('');
+  const [firstWord, setFirstWord] = useState('');
   const [error, setError] = useState(false);
   const [errorNonce, setErrorNonce] = useState(0);
 
-  const onFirstDone = (pin) => {
-    setFirstPin(pin);
+  const onFirstDone = (word) => {
+    setFirstWord(word);
     setStep('confirm');
   };
-  const onConfirmDone = (pin) => {
-    if (pin !== firstPin) {
+  const onConfirmDone = (word) => {
+    if (word !== firstWord) {
       setError(true);
       setErrorNonce((n) => n + 1);
-      setTimeout(() => { setStep('first'); setFirstPin(''); setError(false); }, 600);
+      setTimeout(() => { setStep('first'); setFirstWord(''); setError(false); }, 700);
       return;
     }
-    onSave(pin);
+    onSave(word);
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 bounce-in">
-      <div className="bg-white rounded-3xl p-6 max-w-sm w-full chunky-shadow relative" style={{ border: `3px solid ${color}` }}>
+      <div className="bg-white rounded-3xl p-6 max-w-md w-full chunky-shadow relative" style={{ border: `3px solid ${color}` }}>
         <button onClick={onCancel} className="absolute top-3 right-3 w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center">
           <X className="w-4 h-4" />
         </button>
         <div className="text-5xl text-center mb-2">{emoji}</div>
         <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: deep }}>
-          {step === 'first' ? `Set ${name}'s PIN` : 'Confirm PIN'}
+          {step === 'first' ? `Set ${name}'s secret word` : 'Tap it again'}
         </h3>
         <p className="font-script text-xl text-center mb-5" style={{ color }}>
-          {step === 'first' ? 'tap 4 digits' : error ? "didn't match, try again" : 'tap them again'}
+          {step === 'first' ? 'pick a 4-letter word' : error ? "didn't match — start over" : 'just to confirm'}
         </p>
-        <PinKeypad
+        <WordPad
           key={`${step}-${errorNonce}`}
           color={color} deep={deep} soft={soft}
           onComplete={step === 'first' ? onFirstDone : onConfirmDone}
@@ -2627,6 +2754,8 @@ function SetPinDialog({ payload, onCancel, onSave }) {
     </div>
   );
 }
+// Keep old name as alias for stragglers
+const SetPinDialog = SetSecretDialog;
 
 function PromoteCreationDialog({ payload, config, onCancel, onSave }) {
   const { kid, creation } = payload;
