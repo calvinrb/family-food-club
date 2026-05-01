@@ -81,17 +81,17 @@
       .wordpad-btn {
         font-family: 'Fraunces', serif;
         font-weight: 800;
-        font-size: 1.1rem;
+        font-size: 1.05rem;
         background: white;
-        border-radius: 0.6rem;
+        border-radius: 0.55rem;
         box-shadow: 0 3px 0 rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
         transition: all 0.08s ease;
-        min-height: 46px;
+        min-height: 44px;
         flex: 1;
-        max-width: 40px;
+        max-width: 38px;
       }
       .wordpad-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,0.08); }
-      .wordpad-ctrl { max-width: 50px; flex: 1.1; }
+      .wordpad-ctrl { max-width: 48px; flex: 1.1; }
       .reaction-btn { transition: all 0.2s cubic-bezier(.34,1.56,.64,1); }
       .reaction-btn.active { transform: scale(1.15) rotate(-4deg); }
       details[open] summary .chev { transform: rotate(90deg); }
@@ -168,8 +168,8 @@ async function sha256Hex(text) {
     .join('');
 }
 
-// Normalise a 4-letter word for hashing: lowercase, trimmed, letters only
-const normaliseSecret = (s) => (s || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 4);
+// Normalise a 4-character secret (letter or digit, case-insensitive)
+const normaliseSecret = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 4);
 const isValidSecret = (s) => normaliseSecret(s).length === 4;
 async function hashSecret(word) {
   return sha256Hex('secret:' + normaliseSecret(word));
@@ -883,8 +883,9 @@ function WordPad({ color = '#059669', deep = '#064e3b', soft = '#d1fae5', length
 
   const clear = () => { setWord(''); hasCompleted.current = false; onClear && onClear(); };
 
-  // QWERTY layout is most familiar for readers — 3 rows, cleanly tappable
+  // QWERTY-style layout with digits on top row — 4 rows, finger-friendly
   const rows = [
+    ['1','2','3','4','5','6','7','8','9','0'],
     ['q','w','e','r','t','y','u','i','o','p'],
     ['a','s','d','f','g','h','j','k','l'],
     ['z','x','c','v','b','n','m'],
@@ -909,12 +910,12 @@ function WordPad({ color = '#059669', deep = '#064e3b', soft = '#d1fae5', length
       <div className="max-w-md mx-auto space-y-1.5">
         {rows.map((row, ri) => (
           <div key={ri} className="flex gap-1.5 justify-center">
-            {row.map((letter) => (
-              <button key={letter} onClick={() => press(letter)} className="wordpad-btn" style={{ color: deep }}>
-                {letter.toUpperCase()}
+            {row.map((ch) => (
+              <button key={ch} onClick={() => press(ch)} className="wordpad-btn" style={{ color: deep }}>
+                {ch.toUpperCase()}
               </button>
             ))}
-            {ri === 2 && (
+            {ri === 3 && (
               <>
                 <button onClick={back} className="wordpad-btn wordpad-ctrl flex items-center justify-center" style={{ color: '#a8a29e' }} aria-label="Backspace">
                   <Delete className="w-5 h-5" />
@@ -1006,7 +1007,7 @@ function PinGate({ title, emoji, color, deep, soft, expectedHash, onCancel, onSu
         <div className="text-5xl text-center mb-2">{emoji}</div>
         <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: deep }}>{title}</h3>
         <p className="font-script text-xl text-center mb-5" style={{ color }}>
-          {error ? 'nope, try again' : 'tap your secret word (4 letters)'}
+          {error ? 'nope, try again' : 'tap your 4-letter word or PIN'}
         </p>
         <WordPad key={errorNonce} color={color} deep={deep} soft={soft} onComplete={onComplete} error={error} onClear={() => setError(false)} />
       </div>
@@ -1688,7 +1689,7 @@ function AdminGate({ config, saveConfig, onCancel, onSuccess, onToast }) {
         <div className="text-5xl text-center mb-2">🔒</div>
         <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: '#44403c' }}>Grown-ups only</h3>
         <p className="font-script text-xl text-center mb-5 text-stone-500">
-          {error ? 'nope, try again' : 'tap the grown-up secret word'}
+          {error ? 'nope, try again' : 'tap the grown-up word or PIN'}
         </p>
         <WordPad key={errorNonce} color="#44403c" deep="#1c1917" soft="#f5f5f4" onComplete={onComplete} error={error} onClear={() => setError(false)} />
         <div className="mt-4 text-center">
@@ -2395,9 +2396,9 @@ function AdminProfiles({ config, saveConfig, setDialog, onToast }) {
   return (
     <div>
       <div className="bg-amber-50 rounded-2xl p-3 mb-4 text-sm" style={{ border: '2px dashed #f59e0b' }}>
-        <div className="font-display font-bold text-amber-800 mb-1">🔑 Secret words are optional</div>
+        <div className="font-display font-bold text-amber-800 mb-1">🔑 Secrets are optional</div>
         <p className="font-body text-amber-900 text-xs leading-snug">
-          Anyone without a secret word goes straight in — no gate, just tap their card. Add one only if you want a privacy layer.
+          Anyone without a secret goes straight in — no gate, just tap their card. If you do want one, it can be a 4-letter word or a 4-digit PIN.
         </p>
       </div>
 
@@ -2738,10 +2739,10 @@ function SetSecretDialog({ payload, onCancel, onSave }) {
         </button>
         <div className="text-5xl text-center mb-2">{emoji}</div>
         <h3 className="font-display font-black text-2xl text-center mb-1" style={{ color: deep }}>
-          {step === 'first' ? `Set ${name}'s secret word` : 'Tap it again'}
+          {step === 'first' ? `Set ${name}'s secret` : 'Tap it again'}
         </h3>
         <p className="font-script text-xl text-center mb-5" style={{ color }}>
-          {step === 'first' ? 'pick a 4-letter word' : error ? "didn't match — start over" : 'just to confirm'}
+          {step === 'first' ? 'pick a 4-letter word or 4-digit PIN' : error ? "didn't match — start over" : 'just to confirm'}
         </p>
         <WordPad
           key={`${step}-${errorNonce}`}
